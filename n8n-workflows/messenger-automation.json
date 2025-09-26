@@ -1,0 +1,415 @@
+{
+  "name": "Messenger Automation Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Cron Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://messenger-api:3001/messages",
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "limit",
+                "value": "20"
+              }
+            ]
+          }
+        }
+      },
+      "id": "fetch-messages",
+      "name": "Fetch Messages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-1",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-success",
+      "name": "Check Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process each message and prepare for NLP processing\nconst messages = $input.first().json.data;\n\nif (!messages || messages.length === 0) {\n  return [];\n}\n\n// Filter out empty messages and prepare for processing\nconst processedMessages = messages\n  .filter(msg => msg.message && msg.message.trim().length > 0)\n  .map(msg => ({\n    id: msg.id,\n    time: msg.time,\n    user: msg.user,\n    message: msg.message.trim(),\n    threadId: msg.threadId\n  }));\n\nconsole.log(`Processing ${processedMessages.length} messages`);\n\n// Return each message as a separate item for parallel processing\nreturn processedMessages.map(msg => ({ json: msg }));"
+      },
+      "id": "process-messages",
+      "name": "Process Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $credentials.openAiApi.apiKey }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "gpt-3.5-turbo"
+            },
+            {
+              "name": "messages",
+              "value": "=[\n  {\n    \"role\": \"system\",\n    \"content\": \"你是一個專業的訊息摘要助手，能夠將長篇訊息轉換為簡潔明瞭的摘要。\"\n  },\n  {\n    \"role\": \"user\",\n    \"content\": `請為以下訊息生成簡潔的摘要（最多50字）：\\n\\n用戶：${$json.user}\\n訊息：${$json.message}\\n\\n摘要：`\n  }\n]"
+            },
+            {
+              "name": "max_tokens",
+              "value": "100"
+            },
+            {
+              "name": "temperature",
+              "value": "0.3"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "generate-summary",
+      "name": "Generate Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1120,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api-inference.huggingface.co/models/facebook/bart-large-mnli",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "huggingFaceApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $credentials.huggingFaceApi.apiKey }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "inputs",
+              "value": "={{ $json.message }}"
+            },
+            {
+              "name": "parameters",
+              "value": "={\n  \"candidate_labels\": [\n    \"技術討論\",\n    \"工作相關\",\n    \"生活分享\",\n    \"問題求助\",\n    \"活動通知\",\n    \"其他\"\n  ]\n}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "classify-message",
+      "name": "Classify Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1120,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combine summary and classification results\nconst originalMessage = $('Process Messages').first().json;\nconst summaryResponse = $('Generate Summary').first().json;\nconst classificationResponse = $('Classify Message').first().json;\n\n// Extract summary from OpenAI response\nlet summary = '摘要生成失敗';\nif (summaryResponse.choices && summaryResponse.choices[0]) {\n  summary = summaryResponse.choices[0].message.content.trim();\n}\n\n// Extract category from HuggingFace response\nlet category = '其他';\nif (classificationResponse.labels && classificationResponse.scores) {\n  const maxScoreIndex = classificationResponse.scores.indexOf(Math.max(...classificationResponse.scores));\n  category = classificationResponse.labels[maxScoreIndex];\n}\n\n// Prepare final result\nconst result = {\n  time: originalMessage.time,\n  user: originalMessage.user,\n  message: originalMessage.message,\n  summary: summary,\n  category: category,\n  messageId: originalMessage.id,\n  processedAt: new Date().toISOString()\n};\n\nconsole.log(`Processed message from ${result.user}: ${result.category}`);\n\nreturn [{ json: result }];"
+      },
+      "id": "combine-results",
+      "name": "Combine Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://messenger-api:3001/processed-messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "time",
+              "value": "={{ $json.time }}"
+            },
+            {
+              "name": "user",
+              "value": "={{ $json.user }}"
+            },
+            {
+              "name": "message",
+              "value": "={{ $json.message }}"
+            },
+            {
+              "name": "summary",
+              "value": "={{ $json.summary }}"
+            },
+            {
+              "name": "category",
+              "value": "={{ $json.category }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "save-to-database",
+      "name": "Save to Database",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://messenger-api:3001/stats",
+        "options": {}
+      },
+      "id": "get-stats",
+      "name": "Get Stats",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1780,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log completion and summary\nconst stats = $('Get Stats').first().json.data;\nconst processedCount = $('Save to Database').all().length;\n\nconst summary = {\n  timestamp: new Date().toISOString(),\n  processedMessages: processedCount,\n  totalMessages: stats.totalMessages[0]?.count || 0,\n  categories: stats.messagesByCategory || [],\n  topUsers: stats.messagesByUser?.slice(0, 5) || [],\n  recentActivity: stats.recentActivity || []\n};\n\nconsole.log('Workflow completed successfully:', JSON.stringify(summary, null, 2));\n\nreturn [{ json: summary }];"
+      },
+      "id": "workflow-summary",
+      "name": "Workflow Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Handle error case\nconst error = $input.first().json;\nconsole.error('Workflow error:', error);\n\nreturn [{ json: {\n  error: true,\n  message: 'Workflow execution failed',\n  details: error,\n  timestamp: new Date().toISOString()\n} }];"
+      },
+      "id": "error-handler",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        500
+      ]
+    }
+  ],
+  "connections": {
+    "Cron Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Messages": {
+      "main": [
+        [
+          {
+            "node": "Check Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Success": {
+      "main": [
+        [
+          {
+            "node": "Process Messages",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Messages": {
+      "main": [
+        [
+          {
+            "node": "Generate Summary",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Classify Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Summary": {
+      "main": [
+        [
+          {
+            "node": "Combine Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Message": {
+      "main": [
+        [
+          {
+            "node": "Combine Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine Results": {
+      "main": [
+        [
+          {
+            "node": "Save to Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Database": {
+      "main": [
+        [
+          {
+            "node": "Get Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Stats": {
+      "main": [
+        [
+          {
+            "node": "Workflow Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "messenger-automation",
+      "name": "messenger-automation"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}

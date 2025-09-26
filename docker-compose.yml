@@ -1,0 +1,186 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: messenger-postgres
+    environment:
+      POSTGRES_DB: messenger_automation
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-messenger123}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./database/migrations:/docker-entrypoint-initdb.d/migrations
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - messenger-network
+
+  # Messenger API Service
+  messenger-api:
+    build:
+      context: .
+      dockerfile: messenger-api/Dockerfile
+    container_name: messenger-api
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=messenger_automation
+      - DB_USER=postgres
+      - DB_PASSWORD=${DB_PASSWORD:-messenger123}
+      - FACEBOOK_EMAIL=${FACEBOOK_EMAIL}
+      - FACEBOOK_PASSWORD=${FACEBOOK_PASSWORD}
+      - FACEBOOK_THREAD_ID=${FACEBOOK_THREAD_ID}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./messenger-api:/app
+      - /app/node_modules
+    restart: unless-stopped
+    networks:
+      - messenger-network
+
+  # n8n Workflow Engine
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: messenger-n8n
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-admin123}
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://localhost:5678/
+      - GENERIC_TIMEZONE=Asia/Taipei
+      - N8N_LOG_LEVEL=info
+      - N8N_METRICS=true
+      - N8N_DIAGNOSTICS_ENABLED=true
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n-workflows:/home/node/.n8n/workflows
+    restart: unless-stopped
+    networks:
+      - messenger-network
+
+  # Metabase Dashboard
+  metabase:
+    image: metabase/metabase:latest
+    container_name: messenger-metabase
+    environment:
+      - MB_DB_TYPE=postgres
+      - MB_DB_DBNAME=messenger_automation
+      - MB_DB_PORT=5432
+      - MB_DB_USER=postgres
+      - MB_DB_PASS=${DB_PASSWORD:-messenger123}
+      - MB_DB_HOST=postgres
+      - MB_ENCRYPTION_SECRET_KEY=${METABASE_SECRET_KEY:-messenger-metabase-secret-key-123}
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - metabase_data:/metabase-data
+    restart: unless-stopped
+    networks:
+      - messenger-network
+
+  # Grafana Dashboard (Alternative to Metabase)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: messenger-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin123}
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    ports:
+      - "3002:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./dashboard/grafana/provisioning:/etc/grafana/provisioning
+      - ./dashboard/grafana/dashboards:/var/lib/grafana/dashboards
+    restart: unless-stopped
+    networks:
+      - messenger-network
+    profiles:
+      - grafana
+
+  # Redis for caching (optional)
+  redis:
+    image: redis:7-alpine
+    container_name: messenger-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - messenger-network
+    profiles:
+      - redis
+
+  # Elasticsearch for full-text search (optional)
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: messenger-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    restart: unless-stopped
+    networks:
+      - messenger-network
+    profiles:
+      - elasticsearch
+
+  # Kibana for Elasticsearch visualization (optional)
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: messenger-kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+    networks:
+      - messenger-network
+    profiles:
+      - elasticsearch
+
+volumes:
+  postgres_data:
+    driver: local
+  n8n_data:
+    driver: local
+  metabase_data:
+    driver: local
+  grafana_data:
+    driver: local
+  redis_data:
+    driver: local
+  elasticsearch_data:
+    driver: local
+
+networks:
+  messenger-network:
+    driver: bridge

@@ -1,0 +1,418 @@
+{
+  "name": "Messenger Notification Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Cron Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://messenger-api:3001/processed-messages",
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "limit",
+                "value": "10"
+              }
+            ]
+          }
+        }
+      },
+      "id": "fetch-recent-messages",
+      "name": "Fetch Recent Messages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-1",
+              "leftValue": "={{ $json.data.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-new-messages",
+      "name": "Check New Messages",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter messages for urgent categories and keywords\nconst messages = $input.first().json.data;\nconst urgentKeywords = ['緊急', 'urgent', '急', '重要', 'important', 'bug', '錯誤', 'error', '問題', 'problem'];\nconst urgentCategories = ['問題求助', '技術討論'];\n\nconst urgentMessages = messages.filter(msg => {\n  const isUrgentCategory = urgentCategories.includes(msg.category);\n  const hasUrgentKeyword = urgentKeywords.some(keyword => \n    msg.message.toLowerCase().includes(keyword.toLowerCase())\n  );\n  return isUrgentCategory || hasUrgentKeyword;\n});\n\nconsole.log(`Found ${urgentMessages.length} urgent messages`);\n\nreturn urgentMessages.map(msg => ({ json: msg }));"
+      },
+      "id": "filter-urgent-messages",
+      "name": "Filter Urgent Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-1",
+              "leftValue": "={{ $json.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-urgent-exists",
+      "name": "Check Urgent Exists",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Create notification message\nconst urgentMessages = $input.all();\n\nlet notificationText = `🚨 緊急訊息通知\\n\\n`;\nnotificationText += `發現 ${urgentMessages.length} 則緊急訊息：\\n\\n`;\n\nurgentMessages.forEach((msg, index) => {\n  const data = msg.json;\n  notificationText += `${index + 1}. 【${data.category}】${data.user}\\n`;\n  notificationText += `   摘要：${data.summary}\\n`;\n  notificationText += `   時間：${new Date(data.time).toLocaleString('zh-TW')}\\n\\n`;\n});\n\nnotificationText += `查看完整訊息：http://localhost:3001/processed-messages`;\n\nreturn [{ json: {\n  text: notificationText,\n  count: urgentMessages.length,\n  timestamp: new Date().toISOString()\n} }];"
+      },
+      "id": "create-notification",
+      "name": "Create Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "text",
+              "value": "={{ $json.text }}"
+            },
+            {
+              "name": "username",
+              "value": "Messenger Bot"
+            },
+            {
+              "name": "icon_emoji",
+              "value": ":robot_face:"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "send-slack-notification",
+      "name": "Send Slack Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1560,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://notify-api.line.me/api/notify",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "lineNotifyApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $credentials.lineNotifyApi.accessToken }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "message",
+              "value": "={{ $json.text }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "send-line-notification",
+      "name": "Send Line Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.telegram.org/bot{{ $credentials.telegramApi.token }}/sendMessage",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "telegramApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "{{ $credentials.telegramApi.chatId }}"
+            },
+            {
+              "name": "text",
+              "value": "={{ $json.text }}"
+            },
+            {
+              "name": "parse_mode",
+              "value": "Markdown"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "send-telegram-notification",
+      "name": "Send Telegram Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1560,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log notification sent\nconst notification = $input.first().json;\nconsole.log(`Notification sent: ${notification.count} urgent messages`);\n\nreturn [{ json: {\n  status: 'success',\n  message: 'Notifications sent successfully',\n  urgentCount: notification.count,\n  timestamp: notification.timestamp\n} }];"
+      },
+      "id": "notification-summary",
+      "name": "Notification Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// No urgent messages found\nconsole.log('No urgent messages found');\n\nreturn [{ json: {\n  status: 'no_urgent',\n  message: 'No urgent messages to notify',\n  timestamp: new Date().toISOString()\n} }];"
+      },
+      "id": "no-urgent-messages",
+      "name": "No Urgent Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Cron Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Recent Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Recent Messages": {
+      "main": [
+        [
+          {
+            "node": "Check New Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check New Messages": {
+      "main": [
+        [
+          {
+            "node": "Filter Urgent Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Urgent Messages": {
+      "main": [
+        [
+          {
+            "node": "Check Urgent Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Urgent Exists": {
+      "main": [
+        [
+          {
+            "node": "Create Notification",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Urgent Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Notification": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Notification",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Line Notification",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Telegram Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Slack Notification": {
+      "main": [
+        [
+          {
+            "node": "Notification Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Line Notification": {
+      "main": [
+        [
+          {
+            "node": "Notification Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Telegram Notification": {
+      "main": [
+        [
+          {
+            "node": "Notification Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "notification",
+      "name": "notification"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}
