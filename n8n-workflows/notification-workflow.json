@@ -1,5 +1,5 @@
 {
-  "name": "Messenger Notification Workflow",
+  "name": "Message Processing Notification Workflow",
   "nodes": [
     {
       "parameters": {
@@ -7,13 +7,13 @@
           "interval": [
             {
               "field": "minutes",
-              "minutesInterval": 5
+              "minutesInterval": 1
             }
           ]
         }
       },
       "id": "cron-trigger",
-      "name": "Cron Trigger",
+      "name": "定時檢查",
       "type": "n8n-nodes-base.cron",
       "typeVersion": 1,
       "position": [
@@ -23,20 +23,13 @@
     },
     {
       "parameters": {
-        "url": "http://messenger-api:3001/processed-messages",
+        "url": "http://localhost:3002/api/dashboard/stats",
         "options": {
-          "queryParameters": {
-            "parameters": [
-              {
-                "name": "limit",
-                "value": "10"
-              }
-            ]
-          }
+          "timeout": 10000
         }
       },
-      "id": "fetch-recent-messages",
-      "name": "Fetch Recent Messages",
+      "id": "get-stats",
+      "name": "獲取統計數據",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
       "position": [
@@ -54,8 +47,8 @@
           },
           "conditions": [
             {
-              "id": "condition-1",
-              "leftValue": "={{ $json.data.length }}",
+              "id": "check-new-messages",
+              "leftValue": "={{ $json.data.overall.messages_today }}",
               "rightValue": 0,
               "operator": {
                 "type": "number",
@@ -68,7 +61,7 @@
         "options": {}
       },
       "id": "check-new-messages",
-      "name": "Check New Messages",
+      "name": "檢查新訊息",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
@@ -78,16 +71,40 @@
     },
     {
       "parameters": {
-        "jsCode": "// Filter messages for urgent categories and keywords\nconst messages = $input.first().json.data;\nconst urgentKeywords = ['緊急', 'urgent', '急', '重要', 'important', 'bug', '錯誤', 'error', '問題', 'problem'];\nconst urgentCategories = ['問題求助', '技術討論'];\n\nconst urgentMessages = messages.filter(msg => {\n  const isUrgentCategory = urgentCategories.includes(msg.category);\n  const hasUrgentKeyword = urgentKeywords.some(keyword => \n    msg.message.toLowerCase().includes(keyword.toLowerCase())\n  );\n  return isUrgentCategory || hasUrgentKeyword;\n});\n\nconsole.log(`Found ${urgentMessages.length} urgent messages`);\n\nreturn urgentMessages.map(msg => ({ json: msg }));"
+        "jsCode": "// 生成通知內容\nconst stats = $input.first().json.data;\nconst notification = {\n  title: 'Messenger AI Dashboard 更新',\n  message: `今日處理了 ${stats.overall.messages_today} 則訊息，總共 ${stats.overall.total_messages} 則訊息`,\n  categories: stats.categories,\n  recent_activity: stats.recentActivity.slice(0, 3),\n  timestamp: new Date().toISOString()\n};\n\nreturn [{ json: notification }];"
       },
-      "id": "filter-urgent-messages",
-      "name": "Filter Urgent Messages",
+      "id": "generate-notification",
+      "name": "生成通知",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
         900,
         200
       ]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "notification_logs",
+        "columns": "notification_type,title,message,data,created_at",
+        "additionalFields": {},
+        "mode": "independently"
+      },
+      "id": "log-notification",
+      "name": "記錄通知",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1120,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "PostgreSQL Messenger DB"
+        }
+      }
     },
     {
       "parameters": {
@@ -99,8 +116,8 @@
           },
           "conditions": [
             {
-              "id": "condition-1",
-              "leftValue": "={{ $json.length }}",
+              "id": "check-tech-messages",
+              "leftValue": "={{ $json.categories.find(c => c.category === '技術討論')?.count || 0 }}",
               "rightValue": 0,
               "operator": {
                 "type": "number",
@@ -112,22 +129,9 @@
         },
         "options": {}
       },
-      "id": "check-urgent-exists",
-      "name": "Check Urgent Exists",
+      "id": "check-tech-messages",
+      "name": "檢查技術討論",
       "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [
-        1120,
-        200
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "// Create notification message\nconst urgentMessages = $input.all();\n\nlet notificationText = `🚨 緊急訊息通知\\n\\n`;\nnotificationText += `發現 ${urgentMessages.length} 則緊急訊息：\\n\\n`;\n\nurgentMessages.forEach((msg, index) => {\n  const data = msg.json;\n  notificationText += `${index + 1}. 【${data.category}】${data.user}\\n`;\n  notificationText += `   摘要：${data.summary}\\n`;\n  notificationText += `   時間：${new Date(data.time).toLocaleString('zh-TW')}\\n\\n`;\n});\n\nnotificationText += `查看完整訊息：http://localhost:3001/processed-messages`;\n\nreturn [{ json: {\n  text: notificationText,\n  count: urgentMessages.length,\n  timestamp: new Date().toISOString()\n} }];"
-      },
-      "id": "create-notification",
-      "name": "Create Notification",
-      "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
         1340,
@@ -136,39 +140,12 @@
     },
     {
       "parameters": {
-        "url": "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "text",
-              "value": "={{ $json.text }}"
-            },
-            {
-              "name": "username",
-              "value": "Messenger Bot"
-            },
-            {
-              "name": "icon_emoji",
-              "value": ":robot_face:"
-            }
-          ]
-        },
-        "options": {}
+        "jsCode": "// 生成技術討論特別通知\nconst notification = $input.first().json;\nconst techNotification = {\n  title: '技術討論提醒',\n  message: `發現 ${notification.categories.find(c => c.category === '技術討論')?.count || 0} 則技術討論訊息，請查看詳情`,\n  priority: 'high',\n  timestamp: new Date().toISOString()\n};\n\nreturn [{ json: techNotification }];"
       },
-      "id": "send-slack-notification",
-      "name": "Send Slack Notification",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.1,
+      "id": "generate-tech-notification",
+      "name": "生成技術通知",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         1560,
         100
@@ -176,222 +153,102 @@
     },
     {
       "parameters": {
-        "url": "https://notify-api.line.me/api/notify",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "lineNotifyApi",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "Bearer {{ $credentials.lineNotifyApi.accessToken }}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/x-www-form-urlencoded"
-            }
-          ]
-        },
-        "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "message",
-              "value": "={{ $json.text }}"
-            }
-          ]
-        },
-        "options": {}
+        "operation": "insert",
+        "schema": "public",
+        "table": "notification_logs",
+        "columns": "notification_type,title,message,data,created_at",
+        "additionalFields": {},
+        "mode": "independently"
       },
-      "id": "send-line-notification",
-      "name": "Send Line Notification",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.1,
-      "position": [
-        1560,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "url": "https://api.telegram.org/bot{{ $credentials.telegramApi.token }}/sendMessage",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "telegramApi",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "chat_id",
-              "value": "{{ $credentials.telegramApi.chatId }}"
-            },
-            {
-              "name": "text",
-              "value": "={{ $json.text }}"
-            },
-            {
-              "name": "parse_mode",
-              "value": "Markdown"
-            }
-          ]
-        },
-        "options": {}
-      },
-      "id": "send-telegram-notification",
-      "name": "Send Telegram Notification",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.1,
-      "position": [
-        1560,
-        500
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "// Log notification sent\nconst notification = $input.first().json;\nconsole.log(`Notification sent: ${notification.count} urgent messages`);\n\nreturn [{ json: {\n  status: 'success',\n  message: 'Notifications sent successfully',\n  urgentCount: notification.count,\n  timestamp: notification.timestamp\n} }];"
-      },
-      "id": "notification-summary",
-      "name": "Notification Summary",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "id": "log-tech-notification",
+      "name": "記錄技術通知",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
       "position": [
         1780,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "// No urgent messages found\nconsole.log('No urgent messages found');\n\nreturn [{ json: {\n  status: 'no_urgent',\n  message: 'No urgent messages to notify',\n  timestamp: new Date().toISOString()\n} }];"
-      },
-      "id": "no-urgent-messages",
-      "name": "No Urgent Messages",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1120,
-        400
-      ]
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "PostgreSQL Messenger DB"
+        }
+      }
     }
   ],
+  "pinData": {},
   "connections": {
-    "Cron Trigger": {
+    "定時檢查": {
       "main": [
         [
           {
-            "node": "Fetch Recent Messages",
+            "node": "獲取統計數據",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Fetch Recent Messages": {
+    "獲取統計數據": {
       "main": [
         [
           {
-            "node": "Check New Messages",
+            "node": "檢查新訊息",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Check New Messages": {
+    "檢查新訊息": {
       "main": [
         [
           {
-            "node": "Filter Urgent Messages",
+            "node": "生成通知",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Filter Urgent Messages": {
+    "生成通知": {
       "main": [
         [
           {
-            "node": "Check Urgent Exists",
+            "node": "記錄通知",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Check Urgent Exists": {
+    "記錄通知": {
       "main": [
         [
           {
-            "node": "Create Notification",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "No Urgent Messages",
+            "node": "檢查技術討論",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Create Notification": {
+    "檢查技術討論": {
       "main": [
         [
           {
-            "node": "Send Slack Notification",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Send Line Notification",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Send Telegram Notification",
+            "node": "生成技術通知",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Send Slack Notification": {
+    "生成技術通知": {
       "main": [
         [
           {
-            "node": "Notification Summary",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send Line Notification": {
-      "main": [
-        [
-          {
-            "node": "Notification Summary",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send Telegram Notification": {
-      "main": [
-        [
-          {
-            "node": "Notification Summary",
+            "node": "記錄技術通知",
             "type": "main",
             "index": 0
           }
@@ -399,20 +256,21 @@
       ]
     }
   },
-  "pinData": {},
+  "active": false,
   "settings": {
     "executionOrder": "v1"
   },
-  "staticData": null,
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "notification-workflow",
   "tags": [
     {
-      "createdAt": "2024-01-01T00:00:00.000Z",
-      "updatedAt": "2024-01-01T00:00:00.000Z",
-      "id": "notification",
-      "name": "notification"
+      "createdAt": "2025-09-27T05:00:00.000Z",
+      "updatedAt": "2025-09-27T05:00:00.000Z",
+      "id": "notifications",
+      "name": "Notifications"
     }
-  ],
-  "triggerCount": 1,
-  "updatedAt": "2024-01-01T00:00:00.000Z",
-  "versionId": "1"
+  ]
 }

@@ -1,0 +1,391 @@
+{
+  "name": "Messenger AI Dashboard Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "定時觸發器",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:3002/groups/622758750657081/messages",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "fetch-messages",
+      "name": "抓取群組訊息",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-messages",
+              "leftValue": "={{ $json.data.messages.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-messages",
+      "name": "檢查是否有新訊息",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 處理訊息數據\nconst messages = $input.first().json.data.messages;\nconst processedMessages = [];\n\nfor (const message of messages) {\n  // 檢查是否已經處理過（這裡可以加入更複雜的邏輯）\n  if (message.content && message.content.length > 0) {\n    processedMessages.push({\n      id: message.id,\n      content: message.content,\n      sender: message.sender,\n      timestamp: message.timestamp || new Date().toISOString(),\n      thread_id: '622758750657081'\n    });\n  }\n}\n\nreturn processedMessages.map(msg => ({ json: msg }));"
+      },
+      "id": "process-messages",
+      "name": "處理訊息數據",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:3002/api/process-message",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "message",
+              "value": "={{ $json.content }}"
+            },
+            {
+              "name": "user",
+              "value": "={{ $json.sender }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "ai-processing",
+      "name": "AI 處理訊息",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1120,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "messages",
+        "columns": "thread_id,content,sender,summary,category,created_at,processed_at",
+        "additionalFields": {},
+        "mode": "independently"
+      },
+      "id": "save-to-database",
+      "name": "儲存到資料庫",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1340,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "PostgreSQL Messenger DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:3002/api/dashboard/stats",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "get-dashboard-stats",
+      "name": "獲取儀表板統計",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1560,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-category",
+              "leftValue": "={{ $json.data.category }}",
+              "rightValue": "技術討論",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-tech-discussion",
+      "name": "檢查是否為技術討論",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:3002/groups/622758750657081/stats",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "get-group-stats",
+      "name": "獲取群組統計",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1340,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 生成處理報告\nconst stats = $input.first().json.data;\nconst report = {\n  timestamp: new Date().toISOString(),\n  group_stats: {\n    total_messages: stats.totalMessages,\n    unique_senders: stats.uniqueSenders,\n    categories: stats.categories\n  },\n  processing_summary: {\n    status: 'completed',\n    processed_at: new Date().toISOString()\n  }\n};\n\nreturn [{ json: report }];"
+      },
+      "id": "generate-report",
+      "name": "生成處理報告",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "workflow_logs",
+        "columns": "workflow_name,execution_id,status,execution_data,started_at,completed_at",
+        "additionalFields": {},
+        "mode": "independently"
+      },
+      "id": "log-workflow",
+      "name": "記錄工作流程",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1780,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "PostgreSQL Messenger DB"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "定時觸發器": {
+      "main": [
+        [
+          {
+            "node": "抓取群組訊息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "抓取群組訊息": {
+      "main": [
+        [
+          {
+            "node": "檢查是否有新訊息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "檢查是否有新訊息": {
+      "main": [
+        [
+          {
+            "node": "處理訊息數據",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "記錄工作流程",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "處理訊息數據": {
+      "main": [
+        [
+          {
+            "node": "AI 處理訊息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI 處理訊息": {
+      "main": [
+        [
+          {
+            "node": "儲存到資料庫",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "檢查是否為技術討論",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "儲存到資料庫": {
+      "main": [
+        [
+          {
+            "node": "獲取儀表板統計",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "獲取儀表板統計": {
+      "main": [
+        [
+          {
+            "node": "記錄工作流程",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "檢查是否為技術討論": {
+      "main": [
+        [
+          {
+            "node": "獲取群組統計",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "獲取群組統計": {
+      "main": [
+        [
+          {
+            "node": "生成處理報告",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "生成處理報告": {
+      "main": [
+        [
+          {
+            "node": "記錄工作流程",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "messenger-ai-workflow",
+  "tags": [
+    {
+      "createdAt": "2025-09-27T05:00:00.000Z",
+      "updatedAt": "2025-09-27T05:00:00.000Z",
+      "id": "messenger-automation",
+      "name": "Messenger Automation"
+    }
+  ]
+}
